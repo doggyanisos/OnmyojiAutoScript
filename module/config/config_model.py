@@ -86,6 +86,9 @@ from tasks.Duel.config import Duel
 class ConfigModel(ConfigBase):
     config_name: str = "oas"
     running_task: str = ''
+    # 被强制调用(task_call force_call=True)但自身 scheduler.enable 为 False 的任务名(蛇形)。
+    # 用于让 Restart 这类"用户关闭了每日调度、但异常恢复时必须执行一次"的任务能进入 pending 队列。
+    force_task: str = ''
     script: Script = Field(default_factory=Script)
     restart: Restart = Field(default_factory=Restart)
     global_game: GlobalGame = Field(default_factory=GlobalGame)

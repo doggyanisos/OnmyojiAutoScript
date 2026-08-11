@@ -48,6 +48,7 @@ RestartEmulator:
   DailyRestart: False
 Error:
   HandleError: true
+  FreezeDetection: false
   SaveError: true
   OnePushConfig:
     type: textarea

@@ -12,6 +12,7 @@ from tasks.Utils.config_enum import ShikigamiClass
 class SelectFriendList(str, Enum):
     SAME_SERVER = 'same_server'
     DIFFERENT_SERVER = 'different_server'
+    BOTH = 'both'  # 同区+跨区通吃，取收益最高
 
 class UtilizeRule(str, Enum):
     DEFAULT = 'default'  # 默认就好

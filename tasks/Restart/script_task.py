@@ -41,6 +41,19 @@ class ScriptTask(BaseTask):
         logger.hr('App start')
         self.device.app_start()
         self.device.wait_app_start_ready()
+        # Dismiss startup splash/promotional screens that OAS cannot recognize.
+        # After force-stop + restart, Onmyoji often shows a character splash or
+        # event promo screen (e.g. "天香青竹鸿运当头") that blocks page detection.
+        # A centre tap skips most such screens; harmless if already on a normal page.
+        try:
+            self.device.screenshot()
+            # Use a safe centre point; works for common resolutions (720p/1080p).
+            self.device.click(x=640, y=360, control_name='DismissSplash')
+            logger.info('Tapped centre to dismiss any post-restart splash screen')
+            import time as _time
+            _time.sleep(3)
+        except Exception:
+            logger.warning('Splash-dismiss tap failed (non-fatal)')
         LoginService(config=self.config, device=self.device).app_handle_login()
 
     def app_restart(self):
@@ -49,6 +62,10 @@ class ScriptTask(BaseTask):
         self.app_start()
 
     def recover_app(self):
+        # Reset freeze detection so the restart's own loading/login screens are
+        # not mistaken for a frozen (unchanging) screen, and so the post-restart
+        # first screenshot does not immediately re-trigger a freeze error.
+        self.device.freeze_detection_reset()
         if not self.device.app_is_alive():
             logger.info('Recovery branch: game process not alive and not in foreground -> full restart')
             self.app_restart()

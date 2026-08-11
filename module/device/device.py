@@ -3,6 +3,8 @@ from collections import deque
 from datetime import datetime
 import time
 
+import numpy as np
+
 # Patch pkg_resources before importing adbutils and uiautomator2
 from module.device.pkg_resources import get_distribution
 # Just avoid being removed by import optimization
@@ -31,6 +33,11 @@ class Device(Platform, Screenshot, Control, AppControl):
     stuck_timer = Timer(60, count=60).start()
     stuck_timer_long = Timer(300, count=300).start()
     stuck_long_wait_list = ['BATTLE_STATUS_S', 'PAUSE', 'LOGIN_CHECK', 'PREPARE_BEFORE_BATTLE']
+    # Freeze detection: counts time since the displayed frame last changed.
+    # Unlike stuck_timer (reset by clicks), this only resets when the actual
+    # screen content changes, so it can catch a frozen game that still shows
+    # clickable buttons (which otherwise keeps resetting stuck_timer forever).
+    freeze_timer = Timer(60, count=60).start()
 
     def __init__(self, *args, **kwargs):
         for trial in range(4):
@@ -58,6 +65,7 @@ class Device(Platform, Screenshot, Control, AppControl):
         self.screenshot_interval_set()
         self._image_batch_cache_frame_id: str | None = None
         self._image_batch_cache: dict[int, dict] = {}
+        self._last_freeze_hash: bytes | None = None
 
         # Auto-select the fastest screenshot method
         if self.config.script.device.screenshot_method == 'auto':
@@ -140,6 +148,9 @@ class Device(Platform, Screenshot, Control, AppControl):
         if self.handle_night_commission():
             super().screenshot()
 
+        # Freeze detection: update the frame-change timer (independent of clicks)
+        self.freeze_detection_check()
+
         self.reset_image_batch_cache(self.image_frame_id)
         return self.image
 
@@ -176,6 +187,22 @@ class Device(Platform, Screenshot, Control, AppControl):
         reached_long = self.stuck_timer_long.reached()
 
         if not reached:
+            # Even if no button is being waited on, a frozen screen (frame not
+            # changing for a long time while OAS is still screenshotting) means
+            # the game is stuck. This catches the case where clicks keep
+            # resetting stuck_timer but the screen itself is dead.
+            if getattr(self.config.script.error, 'freeze_detection', False) \
+                    and self.freeze_timer.reached():
+                logger.warning('Screen appears frozen (no frame change for a long time)')
+                # Reset freeze state BEFORE raising, so that the imminent
+                # Restart gets a fresh 60s window instead of re-triggering on
+                # the very next screenshot (which would burn through the
+                # failure limit and abort).
+                self.freeze_detection_reset()
+                if self.app_is_running():
+                    raise GameStuckError('Screen frozen')
+                else:
+                    raise GameNotRunningError('Game died')
             return False
         if not reached_long:
             for button in self.stuck_long_wait_list:
@@ -190,6 +217,56 @@ class Device(Platform, Screenshot, Control, AppControl):
             raise GameStuckError(f'Wait too long')
         else:
             raise GameNotRunningError('Game died')
+
+    def freeze_detection_check(self):
+        """
+        Update the freeze timer based on whether the displayed frame actually
+        changed. The timer is ONLY reset when the screen content changes, so a
+        frozen game that still shows clickable buttons (and thus keeps
+        resetting stuck_timer via clicks) will still be caught here.
+        """
+        if not getattr(self.config.script.error, 'freeze_detection', False):
+            return
+        image = getattr(self, 'image', None)
+        if image is None:
+            return
+        sig = self._freeze_signature(image)
+        if sig is None:
+            return
+        if self._last_freeze_hash is None or sig != self._last_freeze_hash:
+            self._last_freeze_hash = sig
+            self.freeze_timer.reset()
+
+    def freeze_detection_reset(self):
+        """
+        Reset the freeze detection state. Call this whenever the app is
+        restarted/relaunched so that the restart's own loading screens are not
+        mistaken for a frozen (unchanging) screen, and so a post-restart
+        screenshot does not immediately re-trigger a freeze error.
+        """
+        self.freeze_timer.reset()
+        self._last_freeze_hash = None
+
+    def _freeze_signature(self, image):
+        """
+        Cheap perceptual fingerprint of a frame, used to detect whether the
+        screen content has changed between two consecutive screenshots.
+        """
+        try:
+            h, w = image.shape[:2]
+        except Exception:
+            return None
+        # Downsample by striding; resolution is fixed per session so sizes match
+        step = max(1, h // 32)
+        small = image[::step, ::step]
+        if small.ndim == 3:
+            gray = small[..., :3].mean(axis=2)
+        else:
+            gray = small
+        if gray.size == 0:
+            return None
+        mean = gray.mean()
+        return (gray > mean).tobytes()
 
     def handle_control_check(self, button):
         self.stuck_record_clear()

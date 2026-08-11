@@ -160,6 +160,10 @@
         "type": "checkbox",
         "value": true
       },
+      "FreezeDetection": {
+        "type": "checkbox",
+        "value": false
+      },
       "SaveError": {
         "type": "checkbox",
         "value": true

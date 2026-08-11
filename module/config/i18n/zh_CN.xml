@@ -322,6 +322,7 @@ window_background >>> DroidCast_raw >  ADB_nc >> DroidCast > uiautomator2 ~= ADB
 	<message><source>Error</source><translation>出错</translation></message>
 	<message><source>Handle Error</source><translation>启用异常处理</translation></message>
 	<message><source>handle_error_help</source><translation>处理部分异常，运行出错时撤退</translation></message>
+	<message><source>freeze_detection_help</source><translation>开启后，若画面长时间（约60秒）无任何变化则判定游戏卡死并自动重启阴阳师。可解决"点着死画面却不重启"的问题。误判时可关闭。</translation></message>
 	<message><source>Save Error</source><translation>出错时，保存 Log 和截图</translation></message>
 	<message><source>Screenshot Length</source><translation>出错时，保留最后 X 张截图</translation></message>
 	<message><source>Optimization</source><translation>优化</translation></message>
@@ -511,9 +512,12 @@ mode_3策略是刷到五个契灵后开始结契，选择高级、中级盘来�
 	<message><source>guild_assets_enable_help</source><translation>必选项</translation></message>
 	<message><source>box_ap_enable_help</source><translation>必选项</translation></message>
 	<message><source>box_exp_enable_help</source><translation>必选项</translation></message>
-	<message><source>SelectFriendList</source><translation>选择同区还是跨区好友</translation></message>
+	<message><source>SelectFriendList</source><translation>选择同区、跨区还是同区+跨区好友</translation></message>
+	<message><source>same_server</source><translation>同区好友</translation></message>
+	<message><source>different_server</source><translation>跨区好友</translation></message>
+	<message><source>both</source><translation>同区+跨区（取收益最高）</translation></message>
 	<message><source>select_friend_list_help</source><translation>由于该死的游戏制作水准，无论任何方式都不可以稳定的对结界卡进行排序，需要从头到尾遍历一遍。
-且切换好友列表时候会丢失原先选定的好友卡，为此同时选择两个好友列表的最优解是会花费更多的时间，不打算支持</translation></message>
+选择「同区+跨区」会同时遍历同区和跨区两个列表、取收益最高的那张卡，耗时约为单列表的两倍，且依赖「挑选结界卡的规则(utilize_rule)」决定只盯太鼓还是只盯斗鱼。</translation></message>
 	<message><source>Box Exp Waste</source><translation>从盒子提取经验时浪费一部分</translation></message>
 	<message><source>box_exp_waste_help</source><translation>某些时候寄养上存在满级的式神，收取经验盒子时会有提示，对于挂机玩家这点经验微不足道。如果不使能这一选项，将跳过收取经验盒子</translation></message>
 </context>	

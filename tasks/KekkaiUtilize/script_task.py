@@ -31,6 +31,8 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
     utilize_add_count = 0
     ap_max_num = 0
     jade_max_num = 0
+    best_ap_side = None       # 最佳斗鱼卡所在列表: 'same'/'different'
+    best_jade_side = None     # 最佳太鼓卡所在列表: 'same'/'different'
 
     def run(self):
         con = self.config.kekkai_utilize.utilize_config
@@ -337,6 +339,16 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
             raise ValueError('Unknown utilize rule')
         return result
 
+    @property
+    def _utilize_focus(self):
+        """根据 utilize_rule 决定只关注哪种资源；None 表示两种都看（默认规则）。"""
+        rule = self.config.kekkai_utilize.utilize_config.utilize_rule
+        if rule == UtilizeRule.TAIKO:
+            return '太鼓'
+        if rule == UtilizeRule.FISH:
+            return '斗鱼'
+        return None
+
     def run_utilize(self, friend: SelectFriendList = SelectFriendList.SAME_SERVER,
                     shikigami_class: ShikigamiClass = ShikigamiClass.N,
                     shikigami_order: int = 7):
@@ -345,27 +357,122 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
         :param shikigami_order:
         :param shikigami_class:
         :param friend:
-        :param rule:
         :return:
         """
         logger.hr('Start utilize')
-        # 不管什么时候进来都要切换刷新列表(同区与跨区保持一致先切换滑动再切换)
-        if friend == SelectFriendList.SAME_SERVER:
-            self.switch_friend_list(SelectFriendList.SAME_SERVER)
-            self.swipe(self.S_U_END, interval=3)
-            self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
-            self.switch_friend_list(SelectFriendList.SAME_SERVER)
-        else:  # 跨区必须切换两次, 否则结界卡不刷新到头部
-            self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
-            self.swipe(self.S_U_END, interval=3)
-            self.switch_friend_list(SelectFriendList.SAME_SERVER)
-            self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+        focus = self._utilize_focus
+        # 重置选卡记录
+        self.ap_max_num, self.jade_max_num = 0, 0
+        self.best_ap_side, self.best_jade_side = None, None
 
-        # --------------- 结界卡选择 ---------------
-        if not self._select_optimal_resource_card():
+        if friend == SelectFriendList.BOTH:
+            # ---- 同区扫描 ----
+            self.switch_friend_list(SelectFriendList.SAME_SERVER)
+            self.swipe(self.S_U_END, interval=3)
+            self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+            self.switch_friend_list(SelectFriendList.SAME_SERVER)
+            if self._current_select_best(focus=focus, side='same'):
+                return self._finalize_utilize(shikigami_class, shikigami_order)
+            # ---- 跨区扫描 ----
+            self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+            self.swipe(self.S_U_END, interval=3)
+            self.switch_friend_list(SelectFriendList.SAME_SERVER)
+            self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+            if self._current_select_best(focus=focus, side='different'):
+                return self._finalize_utilize(shikigami_class, shikigami_order)
+            # ---- 两列表综合决策选卡 ----
+            if not self._decide_and_confirm(focus=focus):
+                return False
+        else:
+            # 单列表刷新（同区/跨区）
+            if friend == SelectFriendList.SAME_SERVER:
+                self.switch_friend_list(SelectFriendList.SAME_SERVER)
+                self.swipe(self.S_U_END, interval=3)
+                self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+                self.switch_friend_list(SelectFriendList.SAME_SERVER)
+            else:  # 跨区必须切换两次, 否则结界卡不刷新到头部
+                self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+                self.swipe(self.S_U_END, interval=3)
+                self.switch_friend_list(SelectFriendList.SAME_SERVER)
+                self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+            if not self._select_optimal_resource_card(focus=focus):
+                return False
+
+        return self._finalize_utilize(shikigami_class, shikigami_order)
+
+    def _select_optimal_resource_card(self, focus=None):
+        """单列表模式：先探索当前列表（记录最佳/碰到完美卡直接确认），再综合决策确认。
+        focus=None 表示两种资源都看（默认规则），否则只关注指定资源（太鼓/斗鱼）。"""
+        # 第一阶段：探索当前列表
+        if self._current_select_best(focus=focus, side='same'):
+            logger.info('✅ 完美结界卡确认成功，重置状态')
+            self.ap_max_num, self.jade_max_num = 0, 0
+            self.best_ap_side, self.best_jade_side = None, None
+            return True
+        logger.info(f'📝 记录最佳值 | 斗鱼:{self.ap_max_num} 太鼓:{self.jade_max_num}')
+        # 第二阶段：综合决策并确认
+        return self._decide_and_confirm(focus=focus)
+
+    def _decide_and_confirm(self, focus=None):
+        """根据已记录的最佳值决定选择哪种资源卡，并切到对应好友列表执行确认选卡。"""
+        RESOURCE_PRESETS = {
+            '斗鱼': [151, 143, 134, 126, 101, 84],
+            '太鼓': [76,  76,  67,  67,  59,  50]
+        }
+        MAX_INDEX = 99
+
+        def get_resource_index(resource_name, current_value, preset_values):
+            for idx, val in enumerate(preset_values):
+                if current_value >= val:
+                    logger.info(f'📊 {resource_name}区间匹配: {current_value} ≥ {val} (档位{idx})')
+                    return idx
+            logger.warning(f'⚠️ {resource_name}值[{current_value}]低于所有预设')
+            return MAX_INDEX
+
+        # 仅聚焦单一资源时，直接以该资源为准（忽略另一种）
+        if focus is not None:
+            if focus == '太鼓':
+                if self.jade_max_num <= 0:
+                    logger.warning('🔄 太鼓在列表中均无可用卡，重置初始记录')
+                    self.ap_max_num, self.jade_max_num = 0, 0
+                    return False
+                res_type, target, best_side = '太鼓', self.jade_max_num, self.best_jade_side
+            else:  # 斗鱼
+                if self.ap_max_num <= 0:
+                    logger.warning('🔄 斗鱼在列表中均无可用卡，重置初始记录')
+                    self.ap_max_num, self.jade_max_num = 0, 0
+                    return False
+                res_type, target, best_side = '斗鱼', self.ap_max_num, self.best_ap_side
+        else:
+            ap_index = get_resource_index('斗鱼', self.ap_max_num, RESOURCE_PRESETS['斗鱼'])
+            jade_index = get_resource_index('太鼓', self.jade_max_num, RESOURCE_PRESETS['太鼓'])
+            if ap_index == MAX_INDEX and jade_index == MAX_INDEX:
+                logger.warning('🔄 斗鱼和太鼓均低于预设，重置初始记录')
+                self.ap_max_num, self.jade_max_num = 0, 0
+                return False
+            res_type, target = ('斗鱼', self.ap_max_num) if ap_index <= jade_index else ('太鼓', self.jade_max_num)
+            best_side = self.best_ap_side if res_type == '斗鱼' else self.best_jade_side
+
+        logger.info(f'⚖️ 选择{res_type}卡 | 目标: {target} | 来源列表: {best_side}')
+        # 切到最佳卡所在的好友列表（同区/跨区）
+        if best_side == 'different':
+            self.switch_friend_list(SelectFriendList.DIFFERENT_SERVER)
+        else:
+            self.switch_friend_list(SelectFriendList.SAME_SERVER)
+        # 第三阶段：确认选卡
+        if self._current_select_best(res_type, target, selected_card=True, focus=focus):
+            logger.info(f'✅ {res_type}卡确认成功，重置状态')
+            self.ap_max_num, self.jade_max_num = 0, 0
+            self.best_ap_side, self.best_jade_side = None, None
+            return True
+        else:
+            logger.warning(f'❌ {res_type}卡确认失败，重置状态')
+            self.ap_max_num, self.jade_max_num = 0, 0
+            self.best_ap_side, self.best_jade_side = None, None
             return False
 
-        # 找到卡,重置次数
+    def _finalize_utilize(self, shikigami_class, shikigami_order):
+        """选卡成功后进入结界蹭卡流程（进入结界、判断坑位、上式神）。"""
         self.utilize_add_count = 0
         logger.info('开始执行进入结界蹭卡流程')
         self.screenshot()
@@ -400,85 +507,31 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
         self.set_shikigami(shikigami_order, stop_image)
         return True
 
-    def _select_optimal_resource_card(self):
-        """整合后的智能选卡主逻辑（无嵌套函数版）"""
-        # 类常量声明（需在类中定义）
-        RESOURCE_PRESETS = {
-            '斗鱼': [151, 143, 134, 126, 101, 84],
-            '太鼓': [76,  76,  67,  67,  59,  50]
-        }
-        MAX_INDEX = 99
-
-        def get_resource_index(resource_name, current_value, preset_values):
-            """获取资源匹配的档位索引"""
-            for idx, val in enumerate(preset_values):
-                if current_value >= val:
-                    logger.info(f'📊 {resource_name}区间匹配: {current_value} ≥ {val} (档位{idx})')
-                    return idx
-            logger.warning(f'⚠️ {resource_name}值[{current_value}]低于所有预设')
-            return MAX_INDEX
-
-        while True:
-            self.screenshot()
-
-            # 第一阶段：初始记录获取
-            if self.ap_max_num == 0 and self.jade_max_num == 0:
-                logger.hr('第一阶段：初始记录获取', 2)
-                if self._current_select_best():
-                    logger.info(f'✅ 完美结界卡确认成功，重置状态')
-                    self.ap_max_num, self.jade_max_num = 0, 0
-                    return True
-                logger.info(f'📝 记录最佳值 | 斗鱼:{self.ap_max_num} 太鼓:{self.jade_max_num}')
-                return False
-
-            logger.hr('第二阶段：资源优先级判断', 2)
-            # 获取双资源档位
-            ap_index = get_resource_index('斗鱼', self.ap_max_num, RESOURCE_PRESETS['斗鱼'])
-            jade_index = get_resource_index('太鼓', self.jade_max_num, RESOURCE_PRESETS['太鼓'])
-
-            # 双资源超限处理
-            if ap_index == MAX_INDEX and jade_index == MAX_INDEX:
-                logger.warning('🔄 斗鱼和太鼓均低于预设，重置初始记录')
-                self.ap_max_num, self.jade_max_num = 0, 0
-                return False
-
-            # 决策优先级
-            res_type, target = ('斗鱼', self.ap_max_num) if ap_index <= jade_index else ('太鼓', self.jade_max_num)
-            logger.info(f'⚖️ 选择{res_type}卡 | 目标: {target}')
-
-            # 第三阶段：执行选卡操作
-            logger.hr('第三阶段：执行选卡操作', 2)
-            if self._current_select_best(res_type, target, selected_card=True):
-                logger.info(f'✅ {res_type}卡确认成功，重置状态')
-                self.ap_max_num, self.jade_max_num = 0, 0
-                return True
-            else:
-                logger.warning(f'❌ {res_type}卡确认失败，重置状态')
-                self.ap_max_num, self.jade_max_num = 0, 0
-                return False
-
-    def _current_select_best(self, best_card_type=None, best_card_num=0, selected_card=False):
+    def _current_select_best(self, best_card_type=None, best_card_num=0, selected_card=False, focus=None, side=None):
         """结界卡选择核心逻辑（集成版）
         功能：滑动屏幕寻找最优资源卡，支持两种模式：
-        - 探索模式：记录当前遇到的最佳结界卡数值
+        - 探索模式：记录当前遇到的最佳结界卡数值（可聚焦单一资源、可记录来源列表）
         - 确认模式：根据给定条件选择指定类型结界卡
 
         :param best_card_type: 目标卡类型('太鼓'/'斗鱼')
         :param best_card_num:  要求的最低数值
         :param selected_card:  是否处于确认选择模式
+        :param focus:          仅关注的资源类型（'太鼓'/'斗鱼'），为 None 时两种都看
+        :param side:           当前所在好友列表（'same'/'different'），用于记录最佳卡来源
         :return: 找到符合条件返回True，否则None
         """
         # ============== 配置常量 ==============#
         RESOURCE_CONFIG = {
-            '斗鱼': {'max': 151, 'record_attr': 'ap_max_num'},
-            '太鼓': {'max': 76, 'record_attr': 'jade_max_num'}
+            '斗鱼': {'max': 151, 'record_attr': 'ap_max_num', 'side_attr': 'best_ap_side'},
+            '太鼓': {'max': 76, 'record_attr': 'jade_max_num', 'side_attr': 'best_jade_side'}
         }
         MAX_SWIPES = 20  # 最大滑动次数
         CONSEC_MISS = 3  # 允许连续无卡次数
         TIMEOUT = 120  # 操作超时(秒)
 
         # ============== 初始化阶段 ==============#
-        logger.info(f'启动{"探索模式" if not selected_card else f"确认模式 | 目标: {best_card_type} @ {best_card_num}"}')
+        logger.info(f'启动{"探索模式" if not selected_card else f"确认模式 | 目标: {best_card_type} @ {best_card_num}"}'
+                    f'{(" | 聚焦:" + focus) if focus else ""}')
         timer = Timer(TIMEOUT).start()
         miss_count = 0  # 连续无卡计数器
 
@@ -526,9 +579,15 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
                     logger.info(f'⏭️ 跳过无效卡: {card_type}@{card_value}')
                     continue
 
+                # 仅聚焦资源时，跳过非目标资源
+                if focus is not None and card_type != focus:
+                    logger.info(f'⏭️ 聚焦[{focus}]，跳过 {card_type}')
+                    continue
+
                 # ====== 模式分支处理 ======#
                 current_max = RESOURCE_CONFIG[card_type]['max']
                 record_attr = RESOURCE_CONFIG[card_type]['record_attr']
+                side_attr = RESOURCE_CONFIG[card_type]['side_attr']
                 current_record = getattr(self, record_attr, 0)
                 logger.info(f'🔍 识别卡片: {card_type} | 当前值: {card_value}, 最优值: {current_record}')
 
@@ -536,6 +595,8 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
                 if card_value > current_record:
                     logger.info(f'📈 更新记录: {card_type} | {current_record} → {card_value}')
                     setattr(self, record_attr, card_value)
+                    if side is not None:
+                        setattr(self, side_attr, side)
 
                 if selected_card:  # 确认选择模式
                     # 检查是否符合选择条件
@@ -548,6 +609,8 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
                     if card_value >= current_max:
                         message = f'🎉 完美蹭卡 | {card_type}: {card_value}'
                         logger.info(message)
+                        if side is not None:
+                            setattr(self, side_attr, side)
                         self.save_image(push_flag=False, wait_time=0, content=message)
                         return True
 

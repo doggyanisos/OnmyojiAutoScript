@@ -439,6 +439,7 @@ class Script:
                 if self.is_first_task and task == 'Restart':
                     logger.info('Skip task `Restart` at scheduler start')
                     self.config.task_delay(task='Restart', success=True, server=True)
+                    self._clear_force_task(task)
                     del_cached_property(self, 'config')
                     continue
                 decision = self.runtime.prepare_task_execution(task)
@@ -459,6 +460,8 @@ class Script:
 
             # Run
             logger.info(f'Scheduler: Start task `{task}`')
+            # 强制任务只生效一次, 在真正开始执行时就清掉标记, 避免无限循环
+            self._clear_force_task(task)
             self.device.stuck_record_clear()
             self.device.click_record_clear()
             logger.hr(task, level=0)
@@ -501,6 +504,20 @@ class Script:
                 continue
             else:
                 break
+
+    def _clear_force_task(self, task: str) -> None:
+        """
+        清除一次性强制任务标记 (config.model.force_task)
+        :param task: 大驼峰任务名, 如 Restart
+        """
+        try:
+            force_task = getattr(self.config.model, 'force_task', '') or ''
+            if force_task and force_task == convert_to_underscore(task):
+                logger.info(f'Clear forced task mark: {force_task}')
+                self.config.model.force_task = ''
+                self.config.save()
+        except Exception as e:
+            logger.warning(f'Failed to clear forced task mark: {e}')
 
     def _handle_task_exception(self, e: Exception, command: str) -> bool:
         """

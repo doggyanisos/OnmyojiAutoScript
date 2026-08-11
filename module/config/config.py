@@ -183,10 +183,16 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
         waiting_task = []
         error = []
         self.scheduler_update_dt = datetime.now()
+        force_task = getattr(self.model, 'force_task', '') or ''
         for key, value in self.model.dict().items():
             func = Function(key, value)
             if not func.enable:
-                continue
+                # 被强制调用的一次性任务(如异常恢复时的 Restart), 即使用户关闭了它也要执行
+                if key != force_task or not isinstance(value, dict) or value.get('scheduler') is None:
+                    continue
+                func.enable = True
+                func.priority = -1
+                logger.info(f'Force task `{func.command}` is scheduled although it is disabled')
             if not isinstance(func.next_run, datetime):
                 error.append(func)
             elif func.next_run < self.scheduler_update_dt:
@@ -211,6 +217,27 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
             waiting_task = sorted(waiting_task, key=operator.attrgetter("next_run"))
         if error:
             pending_task = error + pending_task
+
+        # 强制任务必须排在队首, 且不能被调度规则(FILTER)过滤掉
+        if force_task:
+            force_command = ConfigModel.type(force_task)
+            hit = None
+            for i, obj in enumerate(pending_task):
+                if obj.command == force_command:
+                    hit = pending_task.pop(i)
+                    break
+            if hit is None:
+                for obj in (waiting_task or []):
+                    if obj.command == force_command:
+                        hit = obj
+                        waiting_task.remove(obj)
+                        break
+            if hit is not None:
+                pending_task.insert(0, hit)
+                logger.info(f'Force task `{force_command}` moved to the head of pending queue')
+            else:
+                logger.warning(f'Force task `{force_task}` not found in scheduler, clear the mark')
+                self.model.force_task = ''
 
         self.pending_task = pending_task
         self.waiting_task = waiting_task
@@ -283,6 +310,11 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
                 microsecond=0
             )
             self.model.deep_set(self.model, keys=f'{task}.scheduler.next_run', value=next_run)
+            # 任务自身被用户关闭时, 强制调用需要打上标记, 否则 update_scheduler 会把它过滤掉,
+            # 导致 task_call 只是改了个 next_run 而任务永远不会被执行 (例如卡死后的 Restart)
+            if force_call and not task_enable:
+                logger.info(f"Task {task} is disabled by user, mark it as a one-shot forced task")
+                self.model.force_task = task
             self.save()
             return True
         else:
