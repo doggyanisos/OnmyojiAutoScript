@@ -38,6 +38,9 @@ class ScriptTask(OrochiScriptTask, TrueOrochiAssets):
                 logger.info('Not find_true_orochi_help')
                 self.check_times(False)
                 raise TaskEnd('TrueOrochi')
+            # 打十层找真蛇之前先切换御魂（与发现真蛇后同一套配置），
+            # 保证打十层用的是正确的御魂，否则打不过十层就发现不了真蛇
+            self._switch_true_orochi_souls()
             battle = self.get_true_orochi()
         if not battle:
             # 如果还没有真蛇，那么就退出
@@ -56,10 +59,8 @@ class ScriptTask(OrochiScriptTask, TrueOrochiAssets):
         self.goto_page(page_main)
         raise TaskEnd('TrueOrochi')
 
-    def run_true_orochi_battle(self):
-        """执行一次真蛇战斗"""
-        conf = self.config.true_orochi.true_orochi_config
-        logger.hr('True Orochi Battle')
+    def _switch_true_orochi_souls(self):
+        """切换御魂：方式一（组队套餐）/ 方式二（按名称）"""
         # 御魂切换方式一
         if self.config.true_orochi.switch_soul.enable:
             self.goto_page(page_shikigami_records)
@@ -69,6 +70,13 @@ class ScriptTask(OrochiScriptTask, TrueOrochiAssets):
             self.goto_page(page_shikigami_records)
             self.run_switch_soul_by_name(self.config.true_orochi.switch_soul.group_name,
                                          self.config.true_orochi.switch_soul.team_name)
+
+    def run_true_orochi_battle(self):
+        """执行一次真蛇战斗"""
+        conf = self.config.true_orochi.true_orochi_config
+        logger.hr('True Orochi Battle')
+        # 御魂切换（方式一/方式二），与打十层找真蛇前的切换共用同一套配置
+        self._switch_true_orochi_souls()
         self.goto_page(page_orochi)
         while 1:
             self.screenshot()
