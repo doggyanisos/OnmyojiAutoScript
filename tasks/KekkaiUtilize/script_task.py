@@ -550,8 +550,16 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
             if not cards:
                 miss_count += 1
                 logger.info(f'第{swipe_count}次滑动 | 未检测到结界卡' if swipe_count > 0 else '初始界面 | 未检测到结界卡')
-                # 连续无卡超过阈值则终止/已经出现空卡也不再滑动
-                if miss_count > CONSEC_MISS or self.appear(self.I_U_EMPTY_CARD):
+                # 确认模式下：切回好友列表后第一眼可能命中"空卡占位"（列表加载/位置偏移的假象），
+                # 若此时立即终止，会导致探索阶段记录的最优卡（如太鼓59）确认失败而被放弃。
+                # 因此确认模式遇到空卡占位不直接终止，而是滑动重试，累计超过阈值才放弃。
+                if self.appear(self.I_U_EMPTY_CARD):
+                    if not selected_card:
+                        logger.info('Empty card already appeared, exit explore')
+                        return None
+                    logger.info(f'确认模式检测到空卡占位, 滑动重试 (miss={miss_count})')
+                # 连续无卡超过阈值则终止
+                if miss_count > CONSEC_MISS:
                     logger.warning(f'⚠️ 连续{miss_count}次 | 未检测到结界卡, 终止流程')
                     return None
                 # 执行滑动操作
