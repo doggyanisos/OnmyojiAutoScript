@@ -126,8 +126,18 @@ class LoginService(BaseTask, RestartAssets, GameUiAssets):
             return True
         except (GameTooManyClickError, GameStuckError) as e:
             logger.warning(e)
+            # Login got stuck (e.g. an unrecognised channel popup blocks the
+            # screen). A fresh launch normally clears such popups, so restart
+            # the game and retry login once before giving up.
             self.device.app_stop()
             self.device.app_start()
+            self.device.stuck_record_clear()
+            self.device.click_record_clear()
+            try:
+                self._app_handle_login()
+                return True
+            except (GameTooManyClickError, GameStuckError):
+                logger.warning('Login still failed after app restart, giving up')
 
         logger.critical('Login failed')
         logger.critical('Onmyoji server may be under maintenance, or you may lost network connection')
