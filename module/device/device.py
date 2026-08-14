@@ -46,7 +46,17 @@ class Device(Platform, Screenshot, Control, AppControl):
     # Unlike stuck_timer (reset by clicks), this only resets when the actual
     # screen content changes, so it can catch a frozen game that still shows
     # clickable buttons (which otherwise keeps resetting stuck_timer forever).
-    freeze_timer = Timer(60, count=60).start()
+    # `count=0`: the freeze is confirmed purely by "screen unchanged for 60s",
+    # not by a number of check calls.
+    # `freeze_change_threshold`: a frame is considered "changed" only when the
+    # mean absolute pixel difference (MAE, in 0-255 gray levels) from the
+    # previous frame exceeds this value. A frozen screen (even with minor
+    # encoding noise) yields a tiny MAE, so it is correctly treated as
+    # unchanged; a genuinely changing screen yields a large MAE and resets the
+    # timer. This is far more robust than exact-match or bit-change-ratio tests,
+    # both of which reset spuriously on flat/low-contrast frozen frames. Tunable.
+    freeze_change_threshold = 5
+    freeze_timer = Timer(60, count=0).start()
 
     def __init__(self, *args, **kwargs):
         # Timestamp (time.time()) marking when a button in `stuck_long_wait_list`
@@ -79,7 +89,7 @@ class Device(Platform, Screenshot, Control, AppControl):
         self.screenshot_interval_set()
         self._image_batch_cache_frame_id: str | None = None
         self._image_batch_cache: dict[int, dict] = {}
-        self._last_freeze_hash: bytes | None = None
+        self._last_freeze_hash = None  # numpy bool array of the last frame, or None
 
         # Auto-select the fastest screenshot method
         if self.config.script.device.screenshot_method == 'auto':
@@ -283,9 +293,22 @@ class Device(Platform, Screenshot, Control, AppControl):
         sig = self._freeze_signature(image)
         if sig is None:
             return
-        if self._last_freeze_hash is None or sig != self._last_freeze_hash:
+        if self._last_freeze_hash is None or sig.shape != self._last_freeze_hash.shape:
+            # First frame, or resolution changed: establish a fresh baseline.
             self._last_freeze_hash = sig
             self.freeze_timer.reset()
+            return
+        # Mean absolute pixel difference (MAE) between frames. A frozen screen
+        # (even with minor encoding noise) yields a tiny MAE and is treated as
+        # unchanged; a genuinely changing screen yields a large MAE and resets
+        # the timer. This is far more robust than exact-match or bit-change-
+        # ratio tests, both of which reset spuriously on flat/low-contrast
+        # frozen frames.
+        mae = float(np.mean(np.abs(sig.astype(np.int16) - self._last_freeze_hash.astype(np.int16))))
+        if mae >= self.freeze_change_threshold:
+            self._last_freeze_hash = sig
+            self.freeze_timer.reset()
+        # else: frame essentially unchanged -> leave the freeze timer running
 
     def freeze_detection_reset(self):
         """
@@ -315,8 +338,10 @@ class Device(Platform, Screenshot, Control, AppControl):
             gray = small
         if gray.size == 0:
             return None
-        mean = gray.mean()
-        return (gray > mean).tobytes()
+        # Return the downsampled grayscale frame (uint8). The caller compares
+        # consecutive frames by mean absolute difference (MAE), which is robust
+        # to encoding noise on otherwise-identical frames.
+        return gray.astype(np.uint8)
 
     def handle_control_check(self, button):
         # Clicks must NOT reset the long-wait cap clock (`reset_long_wait_cap`

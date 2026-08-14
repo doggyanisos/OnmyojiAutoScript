@@ -14,7 +14,7 @@ from tasks.GameUi.page import page_realm_raid, page_main, page_kekkai_toppa, pag
 from tasks.RealmRaid.assets import RealmRaidAssets
 
 from module.logger import logger
-from module.exception import TaskEnd
+from module.exception import TaskEnd, GameStuckError
 from module.atom.image_grid import ImageGrid
 from module.base.utils import point2str
 from module.base.timer import Timer
@@ -155,6 +155,13 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
         # --------------------------------------------------------------------------------------------------------------
         area_index = 0
         success = True
+        # Counts how many full rounds (all areas tried + cache flushed) ended
+        # with NO successful attack. A truly stuck game (every area's "attack"
+        # button unclickable) loops forever here, so bound it: after
+        # RYOUTOPPA_FAIL_ROUNDS consecutive all-fail rounds, give up and let the
+        # restart logic recover. Any successful attack resets the counter.
+        fail_round = 0
+        RYOUTOPPA_FAIL_ROUNDS = 3
         while 1:
             # 设置长任务标志,用来寻找寮突可进攻的目标
             self.device.stuck_record_add('PREPARE_BEFORE_BATTLE')
@@ -174,10 +181,19 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
             if not res:
                 area_index += 1
                 if area_index >= len(area_map):
+                    fail_round += 1
+                    if fail_round >= RYOUTOPPA_FAIL_ROUNDS:
+                        logger.warning(
+                            'RyouToppa attack loop stuck: all areas failed to '
+                            'attack for %d consecutive rounds' % fail_round
+                        )
+                        raise GameStuckError('RyouToppa all areas unavailable after multiple rounds')
                     logger.warning('All areas are not available, it will flush the area cache')
                     area_index = 0
                     self.flush_area_cache()
                 continue
+            else:
+                fail_round = 0
 
         if success:
             self.set_next_run(task='RyouToppa', finish=True, server=True, success=True)
