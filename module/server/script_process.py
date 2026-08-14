@@ -171,6 +171,11 @@ def func(config: str, state_queue: multiprocessing.Queue, log_pipe_in) -> None:
     except Exception as e:
         logger.exception(f'Run script {config} error')
         logger.error(f'Error: {e}')
+        # 崩溃时也广播 WARNING, 否则 server 端 state 一直卡在 RUNNING(1), OASX 显示假绿色
+        try:
+            state_queue.put({"state": ScriptState.WARNING})
+        except Exception as state_err:
+            logger.warning(f'Failed to put WARNING state: {state_err}')
         raise
 
 

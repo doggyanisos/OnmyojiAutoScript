@@ -33,6 +33,15 @@ class Device(Platform, Screenshot, Control, AppControl):
     stuck_timer = Timer(60, count=60).start()
     stuck_timer_long = Timer(300, count=300).start()
     stuck_long_wait_list = ['BATTLE_STATUS_S', 'PAUSE', 'LOGIN_CHECK', 'PREPARE_BEFORE_BATTLE']
+    # Hard wall-clock cap (seconds) for how long a button in `stuck_long_wait_list`
+    # may keep the 300s exemption from `stuck_timer_long`. Without this cap, a
+    # frozen game that still shows and accepts clicks on these buttons keeps
+    # resetting `stuck_timer` (and `stuck_timer_long`) via `handle_control_check`
+    # on every successful click, so the exemption becomes permanent and the game
+    # never restarts. The cap is measured by `_stuck_long_wait_start` (a
+    # timestamp) that is NOT reset by clicks, only by a genuine recovery, so it
+    # bounds the exemption even when clicks keep coming. Tunable.
+    stuck_long_wait_cap = 900
     # Freeze detection: counts time since the displayed frame last changed.
     # Unlike stuck_timer (reset by clicks), this only resets when the actual
     # screen content changes, so it can catch a frozen game that still shows
@@ -40,6 +49,11 @@ class Device(Platform, Screenshot, Control, AppControl):
     freeze_timer = Timer(60, count=60).start()
 
     def __init__(self, *args, **kwargs):
+        # Timestamp (time.time()) marking when a button in `stuck_long_wait_list`
+        # was first observed stuck. Used to cap the long-wait exemption; reset
+        # only on genuine recovery, NOT on clicks, so it survives the
+        # click->stuck_record_clear->stuck_record_add cycle of a frozen game.
+        self._stuck_long_wait_start = None
         for trial in range(4):
             try:
                 super().__init__(*args, **kwargs)
@@ -171,12 +185,40 @@ class Device(Platform, Screenshot, Control, AppControl):
         :return:
         """
         self.detect_record.add(str(button))
+        # Start the long-wait cap clock the first time a long-wait button is
+        # observed stuck. Sticky: not reset by clicks, so it keeps counting
+        # across the click->clear->re-add cycle of a frozen game.
+        if button in self.stuck_long_wait_list and self._stuck_long_wait_start is None:
+            self._stuck_long_wait_start = time.time()
         logger.info(f'Add stuck record: {button}')
 
-    def stuck_record_clear(self):
+    def stuck_record_clear(self, reset_long_wait_cap=True):
         self.detect_record = set()
         self.stuck_timer.reset()
         self.stuck_timer_long.reset()
+        # Genuine recovery resets the long-wait cap clock. Clicks must NOT reset
+        # it (see `handle_control_check`), otherwise a frozen game that keeps
+        # clicking would never hit the cap.
+        if reset_long_wait_cap:
+            self._stuck_long_wait_start = None
+
+    def _long_wait_exceeded(self):
+        """
+        Whether a button in `stuck_long_wait_list` has been stuck longer than
+        the hard cap `stuck_long_wait_cap`.
+
+        Returns:
+            bool: True if the long-wait exemption should be dropped and a
+                restart forced.
+        """
+        in_long_wait = any(button in self.detect_record
+                           for button in self.stuck_long_wait_list)
+        if not in_long_wait:
+            return False
+        if self._stuck_long_wait_start is None:
+            self._stuck_long_wait_start = time.time()
+            return False
+        return time.time() - self._stuck_long_wait_start > self.stuck_long_wait_cap
 
     def stuck_record_check(self):
         """
@@ -184,7 +226,6 @@ class Device(Platform, Screenshot, Control, AppControl):
             GameStuckError:
         """
         reached = self.stuck_timer.reached()
-        reached_long = self.stuck_timer_long.reached()
 
         if not reached:
             # Even if no button is being waited on, a frozen screen (frame not
@@ -203,11 +244,20 @@ class Device(Platform, Screenshot, Control, AppControl):
                     raise GameStuckError('Screen frozen')
                 else:
                     raise GameNotRunningError('Game died')
-            return False
-        if not reached_long:
-            for button in self.stuck_long_wait_list:
-                if button in self.detect_record:
-                    return False
+            # Buttons in `stuck_long_wait_list` are allowed to keep the game
+            # busy past the normal 60s stuck_timer, but the exemption must not
+            # be permanent. A frozen game that still accepts clicks on these
+            # buttons keeps resetting stuck_timer via handle_control_check, so
+            # the 300s stuck_timer_long never times out. Cap the exemption by
+            # wall-clock time the button has actually been stuck; once exceeded,
+            # force a restart even though clicks keep coming.
+            if self._long_wait_exceeded():
+                logger.warning(
+                    f'Long-wait button stuck beyond cap '
+                    f'({self.stuck_long_wait_cap}s): {self.detect_record}'
+                )
+            else:
+                return False
 
         logger.warning('Wait too long')
         logger.warning(f'Waiting for {self.detect_record}')
@@ -269,7 +319,10 @@ class Device(Platform, Screenshot, Control, AppControl):
         return (gray > mean).tobytes()
 
     def handle_control_check(self, button):
-        self.stuck_record_clear()
+        # Clicks must NOT reset the long-wait cap clock (`reset_long_wait_cap`
+        # left at its default False), otherwise a frozen game that still accepts
+        # clicks would keep rearming the exemption and never restart.
+        self.stuck_record_clear(reset_long_wait_cap=False)
         self.click_record_add(button)
         self.click_record_check()
 

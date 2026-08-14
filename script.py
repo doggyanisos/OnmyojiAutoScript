@@ -413,7 +413,10 @@ class Script:
             logger.set_file_logger(self.config_name, do_cleanup=True)
         start_day = date.today()
         logger.info(f'Start scheduler loop: {self.config_name}')
-        self.config.model.running_task = ''
+        try:
+            self.config.model.running_task = ''
+        except Exception as e:
+            logger.warning(f'Failed to init running_task, continue anyway: {e}')
 
         # Update GUI 防呆, 读取设置并立刻显示后台模拟器到前台
         if not self.config.script.device.run_background_only and IS_WINDOWS:
@@ -465,9 +468,17 @@ class Script:
             self.device.stuck_record_clear()
             self.device.click_record_clear()
             logger.hr(task, level=0)
-            self.config.model.running_task = task
+            # 保存 running_task 触发 auto save config, 若配置文件被占用(如 WinError 5)会导致进程静默猝死
+            # 这里做容错: 保存失败仅告警, 不中断调度
+            try:
+                self.config.model.running_task = task
+            except Exception as e:
+                logger.warning(f'Failed to save running_task `{task}`, continue anyway: {e}')
             success = self.run(inflection.camelize(task))
-            self.config.model.running_task = ''
+            try:
+                self.config.model.running_task = ''
+            except Exception as e:
+                logger.warning(f'Failed to clear running_task, continue anyway: {e}')
             logger.info(f'Scheduler: End task `{task}`')
             self.is_first_task = False
 

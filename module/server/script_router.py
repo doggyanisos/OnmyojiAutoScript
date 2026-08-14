@@ -304,11 +304,31 @@ async def sync_next_run(script_name: str, task: str, target_dt: str):
         return False
     config = mm.config_cache(script_name)
     target = datetime.strptime(target_dt, '%Y-%m-%d %H:%M:%S') if target_dt else None
-    config.task_delay(task=task, success=True, target=target)
+    # server=False: 让 target(立即执行时间) 真正生效, 不被 server_update 覆盖成明天
+    config.task_delay(task=task, success=True, target=target, server=False)
     script_process = mm.script_process[script_name]
     config.get_next()
     await script_process.broadcast_state({"schedule": config.get_schedule_data()})
     return True
+
+
+@script_app.put('/{script_name}/{task}/task_call')
+async def task_call(script_name: str, task: str):
+    """立即执行：复用 OAS 官方 config.task_call（与电脑端 OASX「立即执行」完全一致）。
+    设 next_run=now，若任务被用户禁用则打一次性 force_task 标记强制排到队首执行。
+    区别于 sync_next_run：后者只改 next_run 且会被 server_update 覆盖成明天，且不处理禁用任务。"""
+    if script_name not in mm.script_process:
+        return False
+    config = mm.config_cache(script_name)
+    try:
+        ok = config.task_call(task)
+    except Exception as e:
+        logger.warning(f'task_call {script_name}/{task} failed: {e}')
+        return False
+    script_process = mm.script_process[script_name]
+    config.get_next()
+    await script_process.broadcast_state({"schedule": config.get_schedule_data()})
+    return ok
 
 
 # --------------------------------------  SSE  --------------------------------------
