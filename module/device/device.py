@@ -234,8 +234,15 @@ class Device(Platform, Screenshot, Control, AppControl):
         """
         Raises:
             GameStuckError:
+            GameNotRunningError:
         """
         reached = self.stuck_timer.reached()
+        reached_long = self.stuck_timer_long.reached()
+        # Hard wall-clock cap for long-wait buttons: a frozen game that keeps
+        # clicking these buttons resets stuck_timer/stuck_timer_long via
+        # handle_control_check, so the normal timers never time out. This cap
+        # overrides the 300s grace below and forces a restart.
+        long_wait_exceeded = self._long_wait_exceeded()
 
         if not reached:
             # Even if no button is being waited on, a frozen screen (frame not
@@ -254,20 +261,25 @@ class Device(Platform, Screenshot, Control, AppControl):
                     raise GameStuckError('Screen frozen')
                 else:
                     raise GameNotRunningError('Game died')
-            # Buttons in `stuck_long_wait_list` are allowed to keep the game
-            # busy past the normal 60s stuck_timer, but the exemption must not
-            # be permanent. A frozen game that still accepts clicks on these
-            # buttons keeps resetting stuck_timer via handle_control_check, so
-            # the 300s stuck_timer_long never times out. Cap the exemption by
-            # wall-clock time the button has actually been stuck; once exceeded,
-            # force a restart even though clicks keep coming.
-            if self._long_wait_exceeded():
+            if long_wait_exceeded:
                 logger.warning(
                     f'Long-wait button stuck beyond cap '
                     f'({self.stuck_long_wait_cap}s): {self.detect_record}'
                 )
             else:
+                # Normal grace: a button is being waited on but the screen is
+                # still changing, so assume the game is just busy.
                 return False
+
+        # Reached the 60s no-click timer, or the long-wait cap was exceeded.
+        # Buttons in `stuck_long_wait_list` (battle status, prepare, pause,
+        # login) get a longer grace period (stuck_timer_long = 300s) before a
+        # restart is forced, so a genuine long battle / loading screen does not
+        # trigger a false restart. The cap above overrides this grace.
+        if not reached_long and not long_wait_exceeded:
+            for button in self.stuck_long_wait_list:
+                if button in self.detect_record:
+                    return False
 
         logger.warning('Wait too long')
         logger.warning(f'Waiting for {self.detect_record}')
