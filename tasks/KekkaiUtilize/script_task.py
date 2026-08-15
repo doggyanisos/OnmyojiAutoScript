@@ -53,7 +53,22 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
         self.receive_guild_assets(con.harvest_guild_max_times)
         if not con.utilize_enable:
             self.set_next_run(task='KekkaiUtilize', finish=True, success=True)
-        self.goto_page(page_main)
+        # 蹭完卡要导航回庭院。导航失败会抛 GamePageUnknownError，被 force_task 机制误判为
+        # 卡死而强制重启（游戏其实是活的）。这里单独兜底：重试几次，仍失败也直接 TaskEnd
+        # 让 OAS 下一轮自行回主界面（idle goto_main），避免"蹭卡正常完成却反复重启"。
+        try:
+            self.goto_page(page_main)
+        except GamePageUnknownError:
+            logger.warning('KekkaiUtilize finished but navigation back to main failed, retry')
+            for _ in range(3):
+                try:
+                    self.goto_page(page_main)
+                    break
+                except GamePageUnknownError:
+                    continue
+            else:
+                logger.warning('Still failed to navigate back to main after retries, '
+                               'skip restart to avoid spurious reboot')
         raise TaskEnd
 
     def receive_guild_assets(self, max_tries: int = 3):

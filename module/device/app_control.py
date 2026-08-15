@@ -11,6 +11,15 @@ class AppControl(Adb, Uiautomator2):
     hierarchy: etree._Element
     _app_u2_family = ['uiautomator2', 'minitouch', 'scrcpy']
 
+    # 华为渠道弹窗包（活在 Android/模拟器层，会挡在游戏登录界面之前）。
+    # 杀游戏进程清不掉它们，需在重启游戏时一并 am force-stop。
+    _CHANNEL_POPUP_PACKAGES = (
+        'com.huawei.appmarket',       # 华为应用市场
+        'com.huawei.hwid',            # 华为账号
+        'com.huawei.systemmanager',   # 华为系统管理 / 权限弹窗
+        'com.huawei.hms',             # 华为移动服务
+    )
+
     def app_is_alive(self, package_name=None) -> bool:
         """
         判断目标应用进程是否仍然存活，不要求当前位于前台。
@@ -60,6 +69,48 @@ class AppControl(Adb, Uiautomator2):
             self.app_stop_uiautomator2()
         else:
             self.app_stop_adb()
+        # 渠道弹窗（华为应用市场 / 账号 / 系统管理 / HMS）活在 Android 层，
+        # 仅杀游戏清不掉，会挡在登录界面导致脚本反复乱点。杀游戏后顺手
+        # force-stop 这些弹窗包（不动模拟器）。
+        self.kill_channel_popups()
+
+    def _current_foreground_package(self) -> str:
+        """
+        返回当前前台包名（best-effort）。取不到时返回空串。
+        """
+        method = self.config.script.device.screenshot_method
+        try:
+            if method in AppControl._app_u2_family:
+                return self.app_current_uiautomator2()
+            else:
+                return self.app_current_adb()
+        except Exception as e:
+            logger.info(f'Get foreground package failed: {e}')
+            return ''
+
+    def kill_channel_popups(self):
+        """
+        若前台正被已知华为渠道弹窗包占据，则 am force-stop 之。
+
+        华为渠道弹窗（应用市场 / 账号 / 系统管理 / HMS）活在 Android/模拟器
+        层，仅 restart 游戏（杀游戏进程）清不掉它，于是登录界面被挡住、
+        OAS 在登录流程里反复点不到真实按钮（"乱点"），再被冻结检测判死 →
+        重启游戏 → 弹窗仍在 → 又乱点，无限循环。在此处 force-stop 掉弹窗
+        包即可在不重启模拟器的前提下解开，两条重启路径（Login 重试、Restart
+        恢复）都经过 app_stop，故都会被覆盖。
+        """
+        fg = self._current_foreground_package()
+        if not fg:
+            return
+        for pkg in AppControl._CHANNEL_POPUP_PACKAGES:
+            if fg == pkg or fg.startswith(pkg + '.'):
+                logger.warning(f'Channel popup detected in foreground ({pkg}), force-stopping it')
+                try:
+                    self.adb_shell(['am', 'force-stop', pkg])
+                    logger.info(f'Force-stopped channel popup: {pkg}')
+                except Exception as e:
+                    logger.warning(f'Force-stop channel popup failed: {e}')
+                break
 
     def dump_hierarchy(self) -> etree._Element:
         """
