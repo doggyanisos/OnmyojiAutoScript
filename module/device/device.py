@@ -56,6 +56,16 @@ class Device(Platform, Screenshot, Control, AppControl):
     # timer. This is far more robust than exact-match or bit-change-ratio tests,
     # both of which reset spuriously on flat/low-contrast frozen frames. Tunable.
     freeze_change_threshold = 5
+    # `freeze_gap_threshold`: freeze detection assumes screenshots are taken
+    # CONTINUOUSLY. If the gap between two `freeze_detection_check` calls
+    # exceeds this many seconds (e.g. an idle `goto_main` wait, a long page
+    # load, or a task switch where OAS stops screenshotting), the new frame is
+    # NOT comparable to the old baseline. We must reset the baseline instead of
+    # treating the unchanged still frame as "frozen for 60s" -- otherwise a
+    # long idle wait followed by a new task's first screenshot (an identical
+    # still frame) is mis-read as a frozen screen and force-restarts the game.
+    # Tunable.
+    freeze_gap_threshold = 5.0
     freeze_timer = Timer(60, count=0).start()
 
     def __init__(self, *args, **kwargs):
@@ -89,7 +99,8 @@ class Device(Platform, Screenshot, Control, AppControl):
         self.screenshot_interval_set()
         self._image_batch_cache_frame_id: str | None = None
         self._image_batch_cache: dict[int, dict] = {}
-        self._last_freeze_hash = None  # numpy bool array of the last frame, or None
+        self._last_freeze_hash = None  # numpy array of the last frame, or None
+        self._last_freeze_time = None  # time.time() of the last freeze-detection screenshot
 
         # Auto-select the fastest screenshot method
         if self.config.script.device.screenshot_method == 'auto':
@@ -302,6 +313,17 @@ class Device(Platform, Screenshot, Control, AppControl):
         image = getattr(self, 'image', None)
         if image is None:
             return
+        now = time.time()
+        # Discontinuity guard: if screenshots are not continuous (idle wait,
+        # page load, task switch), the new frame is NOT comparable to the old
+        # baseline. Reset the baseline instead of treating an unchanged still
+        # frame as a 60s freeze. See `freeze_gap_threshold`.
+        if self._last_freeze_time is not None \
+                and (now - self._last_freeze_time) > self.freeze_gap_threshold:
+            self.freeze_detection_reset()
+            self._last_freeze_time = now
+            return
+        self._last_freeze_time = now
         sig = self._freeze_signature(image)
         if sig is None:
             return
@@ -331,6 +353,7 @@ class Device(Platform, Screenshot, Control, AppControl):
         """
         self.freeze_timer.reset()
         self._last_freeze_hash = None
+        self._last_freeze_time = None
 
     def _freeze_signature(self, image):
         """
