@@ -101,6 +101,10 @@ class Device(Platform, Screenshot, Control, AppControl):
         self._image_batch_cache: dict[int, dict] = {}
         self._last_freeze_hash = None  # numpy array of the last frame, or None
         self._last_freeze_time = None  # time.time() of the last freeze-detection screenshot
+        # When True, freeze detection is suspended (e.g. during idle wait where
+        # the screen legitimately sits still on page_main). A still screen during
+        # idle must NOT be treated as a frozen (stuck) game.
+        self.freeze_check_paused = False
 
         # Auto-select the fastest screenshot method
         if self.config.script.device.screenshot_method == 'auto':
@@ -261,6 +265,7 @@ class Device(Platform, Screenshot, Control, AppControl):
             # the game is stuck. This catches the case where clicks keep
             # resetting stuck_timer but the screen itself is dead.
             if getattr(self.config.script.error, 'freeze_detection', False) \
+                    and not self.freeze_check_paused \
                     and self.freeze_timer.reached():
                 logger.warning('Screen appears frozen (no frame change for a long time)')
                 # Reset freeze state BEFORE raising, so that the imminent
@@ -310,6 +315,10 @@ class Device(Platform, Screenshot, Control, AppControl):
         """
         if not getattr(self.config.script.error, 'freeze_detection', False):
             return
+        # Suspended during idle / GotoMain wait: the screen is allowed to sit
+        # still there, so we must not accumulate the freeze timer.
+        if self.freeze_check_paused:
+            return
         image = getattr(self, 'image', None)
         if image is None:
             return
@@ -354,6 +363,22 @@ class Device(Platform, Screenshot, Control, AppControl):
         self.freeze_timer.reset()
         self._last_freeze_hash = None
         self._last_freeze_time = None
+
+    def pause_freeze_detection(self):
+        """
+        Suspend freeze detection (idle / GotoMain wait, Restart recovery).
+        A legitimately still screen must not accumulate the freeze timer.
+        """
+        self.freeze_check_paused = True
+
+    def resume_freeze_detection(self):
+        """
+        Resume freeze detection for an active task and clear any stale timer
+        state so a still loading frame right after resume does not immediately
+        trigger a false freeze error.
+        """
+        self.freeze_check_paused = False
+        self.freeze_detection_reset()
 
     def _freeze_signature(self, image):
         """

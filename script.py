@@ -394,6 +394,13 @@ class Script:
 
         self._reset_task_runtime_outcome()
         try:
+            # Idle keep-alive (GotoMain) and Restart recovery show a legitimately
+            # still screen, so suspend freeze detection there; resume (and reset)
+            # it for any real task so genuine freezes are still caught.
+            if command in ('GotoMain', 'Restart'):
+                self.device.pause_freeze_detection()
+            else:
+                self.device.resume_freeze_detection()
             self.device.screenshot()
             module_name = 'script_task'
             module_path = str(Path.cwd() / 'tasks' / command / (module_name + '.py'))
